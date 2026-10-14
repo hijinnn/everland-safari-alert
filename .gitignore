@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.state/
+node_modules/
+research/
+reservation-entry.html
+safari-*.html
+safari-*.json
+everland-common.js
+inspect-reservation.ps1

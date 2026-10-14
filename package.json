@@ -1,0 +1,13 @@
+{
+  "name": "everland-safari-alert",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "check": "node --env-file-if-exists=.env check-safari.mjs --dry-run",
+    "start": "node --env-file-if-exists=.env check-safari.mjs --watch",
+    "notify:test": "node --env-file-if-exists=.env check-safari.mjs --test-notification",
+    "test": "node --test"
+  }
+}

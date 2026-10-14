@@ -1,0 +1,55 @@
+name: Safari availability alert
+
+on:
+  schedule:
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'
+  workflow_dispatch:
+    inputs:
+      test_notification:
+        description: '새 사파리 봇으로 연결 테스트 보내기'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: safari-20261024
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    env:
+      TARGET_DATE: '2026-10-24'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test availability and notification logic
+        run: node --test test/check-safari.test.mjs
+      - name: Restore notification state
+        if: ${{ inputs.test_notification != true }}
+        uses: actions/cache/restore@v4
+        with:
+          path: .state
+          key: safari-v1-20261024-${{ github.run_id }}
+          restore-keys: safari-v1-20261024-
+      - name: Check safari availability
+        id: monitor
+        run: node check-safari.mjs --watch
+        env:
+          SAFARI_TELEGRAM_BOT_TOKEN: ${{ secrets.SAFARI_TELEGRAM_BOT_TOKEN }}
+          SAFARI_TELEGRAM_CHAT_ID: ${{ secrets.SAFARI_TELEGRAM_CHAT_ID }}
+          TEST_NOTIFICATION: ${{ inputs.test_notification }}
+          POLL_INTERVAL_SECONDS: '60'
+          WATCH_SECONDS: '240'
+      - name: Save changed notification state
+        if: ${{ always() && inputs.test_notification != true && steps.monitor.outputs.state_changed == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .state
+          key: safari-v1-20261024-${{ github.run_id }}
