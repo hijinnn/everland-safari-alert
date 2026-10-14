@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir, appendFile, rename } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { isWorkflowEnabled } from './workflow-control.mjs';
 
 export const MENU_ID = '01020100000000000004';
 export const BOOKING_URL = `https://reservation.everland.com/web/el.do?method=getProduct&top_menu_id=01&high_menu_id=0102&menu_id=${MENU_ID}`;
@@ -12,11 +13,6 @@ export function validateDate(value) {
     throw new Error('TARGET_DATE는 유효한 YYYY-MM-DD 날짜여야 합니다.');
   }
   return value;
-}
-
-export function bookingClosed(date, now = new Date()) {
-  // 공식 상품은 방문 전날까지만 예약 가능(RE_TERM=1).
-  return now.getTime() >= Date.parse(`${date}T00:00:00+09:00`);
 }
 
 function checkedAt() {
@@ -153,7 +149,10 @@ export async function runCheck({ date, statePath, dryRun, check = checkAvailabil
   return result;
 }
 
-export async function main(args = process.argv.slice(2), env = process.env) {
+export async function main(args = process.argv.slice(2), env = process.env, {
+  check = runCheck, enabled = () => isWorkflowEnabled(env), now = Date.now,
+  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
+} = {}) {
   const date = validateDate(env.TARGET_DATE || '2026-10-24');
   if (args.includes('--test-notification') || env.TEST_NOTIFICATION === 'true') {
     await sendTelegram(`✅ 사파리 알림 연결 테스트\n대상 이용일: ${date}\n실제 빈자리 알림이 아닙니다.`, env);
@@ -162,30 +161,30 @@ export async function main(args = process.argv.slice(2), env = process.env) {
   }
   const dryRun = args.includes('--dry-run');
   const watch = args.includes('--watch');
-  if (!dryRun && !bookingClosed(date) && (!(env.SAFARI_TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN) || !(env.SAFARI_TELEGRAM_CHAT_ID || env.TELEGRAM_CHAT_ID))) {
+  if (!dryRun && (!(env.SAFARI_TELEGRAM_BOT_TOKEN || env.TELEGRAM_BOT_TOKEN) || !(env.SAFARI_TELEGRAM_CHAT_ID || env.TELEGRAM_CHAT_ID))) {
     throw new Error('텔레그램 봇 토큰과 채팅 ID가 필요합니다. 조회만 하려면 --dry-run을 사용하세요.');
   }
-  const seconds = Number(env.POLL_INTERVAL_SECONDS || 60);
+  const seconds = Number(env.POLL_INTERVAL_SECONDS || 10);
   const duration = Number(env.WATCH_SECONDS || 0);
-  if (!Number.isFinite(seconds) || seconds < 30 || !Number.isFinite(duration) || duration < 0) throw new Error('조회 간격은 30초 이상, 감시 시간은 0 이상의 숫자여야 합니다.');
-  const deadline = duration > 0 ? Date.now() + duration * 1000 : Infinity;
+  if (!Number.isFinite(seconds) || seconds < 10 || !Number.isFinite(duration) || duration < 0) throw new Error('조회 간격은 10초 이상, 감시 시간은 0 이상의 숫자여야 합니다.');
+  const deadline = duration > 0 ? now() + duration * 1000 : Infinity;
   const statePath = resolve(env.STATE_FILE || '.state/safari.json');
   let failures = 0;
   do {
-    if (bookingClosed(date)) {
-      console.log(`${date} 예약 가능 기간이 지나 감시를 종료합니다.`);
-      break;
-    }
     try {
-      await runCheck({ date, statePath, dryRun, send: message => sendTelegram(message, env) });
+      if (!await enabled()) {
+        console.log('워크플로가 Disable되어 감시를 종료합니다.');
+        return;
+      }
+      await check({ date, statePath, dryRun, send: message => sendTelegram(message, env) });
       failures = 0;
     } catch (error) {
       failures += 1;
       console.error(`${checkedAt()} / ${error.message}`);
-      if (!watch || failures >= 3) throw new Error(`${failures}회 연속 조회 또는 알림 실패. 예약 가능 여부를 확인할 수 없습니다.`);
+      if (!watch) throw new Error('조회 또는 알림 실패. 예약 가능 여부를 확인할 수 없습니다.');
     }
-    if (!watch || Date.now() + seconds * 1000 >= deadline) break;
-    await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+    if (!watch || now() + seconds * 1000 >= deadline) break;
+    await sleep(seconds * 1000);
   } while (true);
   if (failures) throw new Error('마지막 예약 상태 조회 또는 알림이 실패했습니다.');
 }
