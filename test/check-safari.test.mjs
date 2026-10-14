@@ -4,8 +4,8 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  MENU_ID, bookingClosed, validateDate, parseStatus, parseCalendar, parseProducts,
-  checkAvailability, shouldNotify, runCheck, sendTelegram,
+  MENU_ID, validateDate, parseStatus, parseCalendar, parseProducts,
+  checkAvailability, shouldNotify, runCheck, sendTelegram, main,
 } from '../check-safari.mjs';
 
 const date = '2026-10-24';
@@ -27,12 +27,66 @@ function responses(payloads) {
   return { fetch, calls };
 }
 
-test('방문 당일 0시 KST에 종료하고 잘못된 날짜를 거절한다', () => {
-  assert.equal(bookingClosed(date, new Date('2026-10-23T14:59:59Z')), false);
-  assert.equal(bookingClosed(date, new Date('2026-10-23T15:00:00Z')), true);
+test('잘못된 대상 날짜를 거절한다', () => {
   assert.equal(validateDate(date), date);
   assert.throws(() => validateDate('2026-02-30'));
   assert.throws(() => validateDate('20261024'));
+});
+
+function watchOptions(overrides = {}) {
+  let time = Date.parse('2026-11-01T00:00:00Z');
+  return { now: () => time, sleep: async ms => { time += ms; }, enabled: async () => true, ...overrides };
+}
+
+const watchEnv = {
+  TARGET_DATE: date, TELEGRAM_BOT_TOKEN: 'fake', TELEGRAM_CHAT_ID: 'fake',
+  POLL_INTERVAL_SECONDS: '10', WATCH_SECONDS: '50',
+};
+
+test('기본 조회 간격이 10초이며 그보다 짧은 간격은 거절한다', async () => {
+  let time = 0;
+  let calls = 0;
+  const intervals = [];
+  await main(['--watch'], { ...watchEnv, POLL_INTERVAL_SECONDS: '', WATCH_SECONDS: '25' }, {
+    now: () => time, enabled: async () => true,
+    sleep: async ms => { intervals.push(ms); time += ms; },
+    check: async () => { calls += 1; },
+  });
+  assert.equal(calls, 3);
+  assert.deepEqual(intervals, [10000, 10000]);
+  await assert.rejects(main(['--watch'], { ...watchEnv, POLL_INTERVAL_SECONDS: '9' }), /10초 이상/);
+});
+
+test('대상일이 지나도 자동 종료하지 않고 감시 시간 동안 계속 조회한다', async () => {
+  let calls = 0;
+  await main(['--watch'], watchEnv, watchOptions({ check: async () => { calls += 1; } }));
+  assert.equal(calls, 5);
+});
+
+test('3회 넘게 연속 실패해도 다음 조회를 시도하고 복구한다', async () => {
+  let calls = 0;
+  await main(['--watch'], watchEnv, watchOptions({ check: async () => {
+    if (++calls <= 4) throw new Error('temporary failure');
+  } }));
+  assert.equal(calls, 5);
+});
+
+test('감시 구간 끝까지 실패하면 실패 상태로 마쳐 다음 실행에서 재시도할 수 있다', async () => {
+  let calls = 0;
+  await assert.rejects(main(['--watch'], watchEnv, watchOptions({ check: async () => {
+    calls += 1;
+    throw new Error('offline');
+  } })), /마지막 예약 상태 조회/);
+  assert.equal(calls, 5);
+});
+
+test('실행 중 Disable되면 다음 예약 조회를 하지 않고 종료한다', async () => {
+  let calls = 0;
+  await main(['--watch'], watchEnv, watchOptions({
+    enabled: async () => calls === 0,
+    check: async () => { calls += 1; },
+  }));
+  assert.equal(calls, 1);
 });
 
 test('문서에서 확인한 잔여 없음 코드와 기존 발렛의 성공 코드를 구별한다', () => {

@@ -11,17 +11,18 @@ on:
         default: false
 
 permissions:
+  actions: write
   contents: read
 
 concurrency:
-  group: safari-20261024
+  group: safari-20261024-${{ inputs.test_notification == true && github.run_id || 'watch' }}
   cancel-in-progress: false
 
 jobs:
   check:
     if: ${{ github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 32
     env:
       TARGET_DATE: '2026-10-24'
     steps:
@@ -30,7 +31,7 @@ jobs:
         with:
           node-version: '22'
       - name: Test availability and notification logic
-        run: node --test test/check-safari.test.mjs
+        run: node --test
       - name: Restore notification state
         if: ${{ inputs.test_notification != true }}
         uses: actions/cache/restore@v4
@@ -45,11 +46,17 @@ jobs:
           SAFARI_TELEGRAM_BOT_TOKEN: ${{ secrets.SAFARI_TELEGRAM_BOT_TOKEN }}
           SAFARI_TELEGRAM_CHAT_ID: ${{ secrets.SAFARI_TELEGRAM_CHAT_ID }}
           TEST_NOTIFICATION: ${{ inputs.test_notification }}
-          POLL_INTERVAL_SECONDS: '60'
-          WATCH_SECONDS: '240'
+          GITHUB_TOKEN: ${{ github.token }}
+          POLL_INTERVAL_SECONDS: '10'
+          WATCH_SECONDS: '1740'
       - name: Save changed notification state
         if: ${{ always() && inputs.test_notification != true && steps.monitor.outputs.state_changed == 'true' }}
         uses: actions/cache/save@v4
         with:
           path: .state
           key: safari-v1-20261024-${{ github.run_id }}
+      - name: Continue watching unless disabled
+        if: ${{ !cancelled() && inputs.test_notification != true && steps.monitor.outcome != 'skipped' }}
+        run: node workflow-control.mjs
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
